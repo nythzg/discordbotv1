@@ -2,10 +2,19 @@ const { ActivityType, Events } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const logger = require('../utils/logger');
+const { applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
 
 async function synchronizeGuildRewards(guild) {
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
     if (!rewards.length) return 0;
+
+    for (const reward of rewards) {
+        const role = guild.roles.cache.get(reward.roleId);
+        if (role?.name === `Level ${reward.level}`) {
+            await applyLevelRoleFeatures(role, reward.level, 'Synchronizing level milestone permissions on startup')
+                .catch(error => logger.error(`Could not update permissions for ${role.name}:`, error));
+        }
+    }
 
     const profiles = await UserProfile.find({
         guildId: guild.id,

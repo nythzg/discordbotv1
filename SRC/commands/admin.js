@@ -5,6 +5,7 @@ const GuildSettings = require('../models/GuildSettings');
 const { getLevelFromXp } = require('../utils/levelUtils');
 const { defaults } = require('../config/botConfig');
 const { sendLevelUpNotification } = require('../utils/levelUpNotifier');
+const { levelRoleFeatures, applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
 const logger = require('../utils/logger');
 
 const adminSuiteCommand = {
@@ -149,6 +150,12 @@ const adminSuiteCommand = {
                     reused.push(roleName);
                 }
 
+                await applyLevelRoleFeatures(
+                    role,
+                    level,
+                    `Applying Level ${level} milestone features requested by ${interaction.user.tag}`
+                );
+
                 await Reward.findOneAndUpdate(
                     { guildId, level },
                     { roleId: role.id },
@@ -156,6 +163,10 @@ const adminSuiteCommand = {
                 );
                 rewards.push({ level, roleId: role.id });
             }
+
+            await interaction.guild.roles.setPositions(
+                rewards.map((reward, index) => ({ role: reward.roleId, position: index + 1 }))
+            );
 
             let membersSynced = 0;
             const profiles = await UserProfile.find({ guildId, level: { $gte: interval } }).lean();
@@ -171,7 +182,11 @@ const adminSuiteCommand = {
 
             await interaction.editReply(
                 `Configured **${levels.length}** automatic level roles through Level ${maxLevel}. ` +
-                `Created: **${created.length}**; reused: **${reused.length}**; existing members synchronized: **${membersSynced}**.`
+                `Created: **${created.length}**; reused: **${reused.length}**; existing members synchronized: **${membersSynced}**.\n` +
+                Object.entries(levelRoleFeatures)
+                    .filter(([level]) => Number(level) <= maxLevel)
+                    .map(([level, feature]) => `Level ${level}: ${feature.label}`)
+                    .join('\n')
             );
             await logger.sendLog(interaction.guild, 'Admin Action: Level Roles Configured', `${interaction.user.tag} configured ${levels.length} level roles.`, '#e74c3c');
             return;
