@@ -21,5 +21,6 @@ const levelRoles = {
 };
 
 const generalChannelId = process.env.GENERAL_CHANNEL_ID || '1395944374931685517';
+const memberRoleId = process.env.MEMBER_ROLE_ID || '1408734349460897933';
 
-module.exports = { defaults, progression, antiAbuse, levelRoles, generalChannelId };
+module.exports = { defaults, progression, antiAbuse, levelRoles, generalChannelId, memberRoleId };

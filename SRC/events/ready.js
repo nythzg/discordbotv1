@@ -1,13 +1,34 @@
-const { ActivityType, Events } = require('discord.js');
+const { ActivityType, Events, PermissionsBitField } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const GuildSettings = require('../models/GuildSettings');
 const logger = require('../utils/logger');
 const { parseLevelRoleName, applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
-const { progression } = require('../config/botConfig');
+const { progression, memberRoleId } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
 
 const UPDATE_HISTORY_VERSION = '2026-07-14-runtime-log-rollup-v1';
+
+async function secureMemberRole(guild) {
+    const role = guild.roles.cache.get(memberRoleId);
+    if (!role) {
+        logger.error(`Configured member role ${memberRoleId} was not found in ${guild.name}.`);
+        return { memberRoleUpdated: false, memberRoleBlocked: false };
+    }
+    if (!role.editable) {
+        logger.error(`Cannot secure member role ${role.name}: move the bot's highest role above it.`);
+        return { memberRoleUpdated: false, memberRoleBlocked: true };
+    }
+    if (role.permissions.bitfield === 0n) {
+        return { memberRoleUpdated: false, memberRoleBlocked: false };
+    }
+
+    await role.edit({
+        permissions: new PermissionsBitField(),
+        reason: 'Removing elevated permissions from the standard member role'
+    });
+    return { memberRoleUpdated: true, memberRoleBlocked: false };
+}
 
 async function discoverAndConfigureLevelRoles(guild) {
     const discoveredByLevel = new Map();
@@ -52,6 +73,7 @@ async function discoverAndConfigureLevelRoles(guild) {
 }
 
 async function synchronizeGuildRewards(guild) {
+    const memberRoleSecurity = await secureMemberRole(guild);
     const roleConfiguration = await discoverAndConfigureLevelRoles(guild);
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
     const profiles = await UserProfile.find({ guildId: guild.id }).lean();
@@ -73,7 +95,7 @@ async function synchronizeGuildRewards(guild) {
     }
     if (profileUpdates.length) await UserProfile.bulkWrite(profileUpdates);
     if (!rewards.length) {
-        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration };
+        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...memberRoleSecurity };
     }
 
     for (const reward of rewards) {
@@ -117,7 +139,7 @@ async function synchronizeGuildRewards(guild) {
             logger.error(`Could not synchronize reward roles for ${member.user.tag}:`, error);
         }
     }
-    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration };
+    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...memberRoleSecurity };
 }
 
 module.exports = {
@@ -134,6 +156,7 @@ module.exports = {
             logger.info(
                 `Level reconciliation completed for ${guild.name}: ` +
                 `${result.permissionsUpdated}/${result.rolesMapped} role permission sets changed, ` +
+                `member role ${result.memberRoleUpdated ? 'secured' : result.memberRoleBlocked ? 'blocked by hierarchy' : 'already secure'}, ` +
                 `${result.profilesUpdated} profiles recalculated, ${result.membersUpdated} members updated, ` +
                 `${result.blockedRoles} roles blocked by hierarchy.`
             );
