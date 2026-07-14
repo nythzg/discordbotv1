@@ -1,4 +1,4 @@
-const { PermissionFlagsBits } = require('discord.js');
+const { PermissionFlagsBits, PermissionsBitField } = require('discord.js');
 
 const levelRoleFeatures = Object.freeze({
     5: {
@@ -27,29 +27,24 @@ const levelRoleFeatures = Object.freeze({
     }
 });
 
-const managedMilestonePermissions = [
-    PermissionFlagsBits.UseExternalEmojis,
-    PermissionFlagsBits.UseExternalStickers,
-    PermissionFlagsBits.AddReactions,
-    PermissionFlagsBits.AttachFiles,
-    PermissionFlagsBits.EmbedLinks,
-    PermissionFlagsBits.MoveMembers
-];
+function parseLevelRoleName(name) {
+    const match = String(name || '').trim().match(/^(?:level|lvl)\s*(\d+)$/i);
+    return match ? Number(match[1]) : null;
+}
 
 async function applyLevelRoleFeatures(role, level, reason = 'Updating level milestone permissions') {
     const feature = levelRoleFeatures[level];
-    if (!feature || !role.editable) return false;
+    if (!role.editable) return false;
 
-    const desiredPermissions = role.permissions
-        .remove(managedMilestonePermissions)
-        .add(feature.permissions);
+    const desiredPermissions = new PermissionsBitField(feature?.permissions || []);
+    const shouldHoist = Boolean(feature);
     const changes = {};
     if (desiredPermissions.bitfield !== role.permissions.bitfield) changes.permissions = desiredPermissions;
-    if (!role.hoist) changes.hoist = true;
+    if (role.hoist !== shouldHoist) changes.hoist = shouldHoist;
     if (!Object.keys(changes).length) return false;
 
     await role.edit({ ...changes, reason });
     return true;
 }
 
-module.exports = { levelRoleFeatures, applyLevelRoleFeatures };
+module.exports = { levelRoleFeatures, parseLevelRoleName, applyLevelRoleFeatures };

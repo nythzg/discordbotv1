@@ -3,13 +3,56 @@ const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const GuildSettings = require('../models/GuildSettings');
 const logger = require('../utils/logger');
-const { applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
+const { parseLevelRoleName, applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
 const { progression } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
 
 const UPDATE_HISTORY_VERSION = '2026-07-14-runtime-log-rollup-v1';
 
+async function discoverAndConfigureLevelRoles(guild) {
+    const discoveredByLevel = new Map();
+    let blockedRoles = 0;
+
+    for (const role of guild.roles.cache.values()) {
+        const level = parseLevelRoleName(role.name);
+        if (level === null || role.managed || role.id === guild.id) continue;
+        if (!role.editable) {
+            blockedRoles++;
+            logger.error(`Cannot update ${role.name}: move the bot's highest role above it.`);
+            continue;
+        }
+
+        const existing = discoveredByLevel.get(level);
+        const isCanonical = role.name.toLowerCase() === `level ${level}`;
+        const existingIsCanonical = existing?.name.toLowerCase() === `level ${level}`;
+        if (!existing || (isCanonical && !existingIsCanonical)) discoveredByLevel.set(level, role);
+    }
+
+    let permissionsUpdated = 0;
+    for (const [level, role] of discoveredByLevel) {
+        try {
+            const changed = await applyLevelRoleFeatures(
+                role,
+                level,
+                `Enforcing exact Level ${level} permission criteria on bot startup`
+            );
+            if (changed) permissionsUpdated++;
+            await Reward.findOneAndUpdate(
+                { guildId: guild.id, level },
+                { roleId: role.id },
+                { upsert: true, new: true, setDefaultsOnInsert: true }
+            );
+        } catch (error) {
+            blockedRoles++;
+            logger.error(`Could not configure ${role.name}; check Manage Roles and role hierarchy:`, error);
+        }
+    }
+
+    return { rolesMapped: discoveredByLevel.size, permissionsUpdated, blockedRoles };
+}
+
 async function synchronizeGuildRewards(guild) {
+    const roleConfiguration = await discoverAndConfigureLevelRoles(guild);
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
     const profiles = await UserProfile.find({ guildId: guild.id }).lean();
 
@@ -29,7 +72,9 @@ async function synchronizeGuildRewards(guild) {
         }
     }
     if (profileUpdates.length) await UserProfile.bulkWrite(profileUpdates);
-    if (!rewards.length) return profileUpdates.length;
+    if (!rewards.length) {
+        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration };
+    }
 
     for (const reward of rewards) {
         const role = guild.roles.cache.get(reward.roleId);
@@ -72,7 +117,7 @@ async function synchronizeGuildRewards(guild) {
             logger.error(`Could not synchronize reward roles for ${member.user.tag}:`, error);
         }
     }
-    return membersUpdated;
+    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration };
 }
 
 module.exports = {
@@ -85,8 +130,13 @@ module.exports = {
         client.user.setActivity('community activity tracking metrics', { type: ActivityType.Watching });
 
         for (const guild of client.guilds.cache.values()) {
-            const membersUpdated = await synchronizeGuildRewards(guild);
-            logger.info(`Reward role synchronization completed for ${guild.name}: ${membersUpdated} member(s) updated.`);
+            const result = await synchronizeGuildRewards(guild);
+            logger.info(
+                `Level reconciliation completed for ${guild.name}: ` +
+                `${result.permissionsUpdated}/${result.rolesMapped} role permission sets changed, ` +
+                `${result.profilesUpdated} profiles recalculated, ${result.membersUpdated} members updated, ` +
+                `${result.blockedRoles} roles blocked by hierarchy.`
+            );
 
             const settings = await GuildSettings.findOne({ guildId: guild.id }).lean();
             if (settings?.lastUpdateHistoryVersion !== UPDATE_HISTORY_VERSION) {
