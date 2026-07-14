@@ -1,4 +1,12 @@
-const { createCanvas, loadImage } = require('canvas');
+const { createCanvas, loadImage, registerFont } = require('canvas');
+const path = require('path');
+
+registerFont(path.join(__dirname, '../../assets/Poppins-Regular.ttf'), {
+    family: 'PoppinsLocalRegular'
+});
+registerFont(path.join(__dirname, '../../assets/Poppins-Bold.ttf'), {
+    family: 'PoppinsLocalBold'
+});
 
 async function drawRankCard(username, discriminator, avatarUrl, level, currentXp, targetXp, rank) {
     const canvas = createCanvas(934, 282);
@@ -31,13 +39,13 @@ async function drawRankCard(username, discriminator, avatarUrl, level, currentXp
     ctx.restore();
 
     // 3. Username Rendering String Construction
-    ctx.font = 'bold 38px sans-serif';
+    ctx.font = '38px PoppinsLocalBold';
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'left';
     ctx.fillText(username, 270, 120);
 
     // 4. Metrics Text Calculation (Level / Rank Alignment)
-    ctx.font = 'bold 28px sans-serif';
+    ctx.font = '28px PoppinsLocalBold';
     ctx.fillStyle = '#7289da';
     ctx.fillText(`RANK #${rank}`, 270, 175);
 
@@ -45,7 +53,7 @@ async function drawRankCard(username, discriminator, avatarUrl, level, currentXp
     ctx.fillText(`LEVEL ${level}`, 470, 175);
 
     // Progress Raw Values Text
-    ctx.font = '24px sans-serif';
+    ctx.font = '24px PoppinsLocalRegular';
     ctx.fillStyle = '#b9bbbe';
     ctx.textAlign = 'right';
     const progressString = `${currentXp.toLocaleString()} / ${targetXp.toLocaleString()} XP`;
@@ -116,7 +124,7 @@ async function drawLevelUpCard(username, avatarUrl, level) {
         ctx.fillStyle = '#5865f2';
         ctx.fillRect(58, 58, 184, 184);
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 76px sans-serif';
+        ctx.font = '76px PoppinsLocalBold';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(username.slice(0, 1).toUpperCase(), 150, 150);
@@ -132,20 +140,20 @@ async function drawLevelUpCard(username, avatarUrl, level) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#c4b5fd';
-    ctx.font = 'bold 25px sans-serif';
+    ctx.font = '25px PoppinsLocalBold';
     ctx.fillText('LEVEL UP!', 285, 82);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 46px sans-serif';
+    ctx.font = '46px PoppinsLocalBold';
     const displayName = username.length > 20 ? `${username.slice(0, 19)}…` : username;
     ctx.fillText(displayName, 285, 140);
 
     ctx.fillStyle = '#ddd6fe';
-    ctx.font = '28px sans-serif';
+    ctx.font = '28px PoppinsLocalRegular';
     ctx.fillText('has reached', 285, 190);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 50px sans-serif';
+    ctx.font = '50px PoppinsLocalBold';
     ctx.fillText(`LEVEL ${level}`, 285, 250);
 
     return canvas.toBuffer('image/png');
