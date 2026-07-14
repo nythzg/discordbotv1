@@ -1,4 +1,4 @@
-const { ActivityType, Events } = require('discord.js');
+const { ActivityType, Events, PermissionFlagsBits, PermissionsBitField } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const GuildSettings = require('../models/GuildSettings');
@@ -13,6 +13,31 @@ const { progression } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
 
 const UPDATE_HISTORY_VERSION = '2026-07-14-runtime-log-rollup-v1';
+
+async function ensurePublicCommandAccess(guild) {
+    const everyoneRole = guild.roles.everyone;
+    if (everyoneRole.permissions.has(PermissionFlagsBits.UseApplicationCommands, false)) {
+        return { publicCommandAccessUpdated: false, publicCommandAccessBlocked: false };
+    }
+
+    if (!everyoneRole.editable) {
+        logger.error(`Cannot enable public slash commands on @everyone in ${guild.name}; check Manage Roles.`);
+        return { publicCommandAccessUpdated: false, publicCommandAccessBlocked: true };
+    }
+
+    try {
+        const permissions = new PermissionsBitField(everyoneRole.permissions.bitfield)
+            .add(PermissionFlagsBits.UseApplicationCommands);
+        await everyoneRole.edit({
+            permissions,
+            reason: 'Allowing every server member to use public rank and leaderboard commands'
+        });
+        return { publicCommandAccessUpdated: true, publicCommandAccessBlocked: false };
+    } catch (error) {
+        logger.error(`Could not enable public slash commands for @everyone in ${guild.name}:`, error);
+        return { publicCommandAccessUpdated: false, publicCommandAccessBlocked: true };
+    }
+}
 
 async function discoverAndConfigureLevelRoles(guild) {
     const discoveredByLevel = new Map();
@@ -76,6 +101,7 @@ async function discoverAndConfigureLevelRoles(guild) {
 }
 
 async function synchronizeGuildRewards(guild) {
+    const publicCommandAccess = await ensurePublicCommandAccess(guild);
     const roleConfiguration = await discoverAndConfigureLevelRoles(guild);
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
     const profiles = await UserProfile.find({ guildId: guild.id }).lean();
@@ -97,7 +123,7 @@ async function synchronizeGuildRewards(guild) {
     }
     if (profileUpdates.length) await UserProfile.bulkWrite(profileUpdates);
     if (!rewards.length) {
-        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration };
+        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...publicCommandAccess };
     }
 
     for (const reward of rewards) {
@@ -141,7 +167,7 @@ async function synchronizeGuildRewards(guild) {
             logger.error(`Could not synchronize reward roles for ${member.user.tag}:`, error);
         }
     }
-    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration };
+    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...publicCommandAccess };
 }
 
 module.exports = {
@@ -160,6 +186,7 @@ module.exports = {
                 `${result.permissionsUpdated} level role permission sets changed, ` +
                 `${result.rolesMapped} level rewards mapped, ` +
                 `${result.nonLevelRolesUpdated} non-level roles had level rewards removed, ` +
+                `public commands ${result.publicCommandAccessUpdated ? 'enabled for everyone' : result.publicCommandAccessBlocked ? 'blocked' : 'already enabled'}, ` +
                 `${result.profilesUpdated} profiles recalculated, ${result.membersUpdated} members updated, ` +
                 `${result.blockedRoles} roles blocked by hierarchy.`
             );

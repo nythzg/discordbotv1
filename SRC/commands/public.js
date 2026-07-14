@@ -8,6 +8,7 @@ const rankCommand = {
     data: new SlashCommandBuilder()
         .setName('rank')
         .setDescription('Show a member level and qualifying-message progress.')
+        .setDefaultMemberPermissions(null)
         .addUserOption(option => option.setName('target').setDescription('Member to view')),
     async execute(interaction) {
         await interaction.deferReply();
@@ -42,6 +43,7 @@ const leaderboardCommand = {
     data: new SlashCommandBuilder()
         .setName('leaderboard')
         .setDescription('View the qualifying-message leaderboard.')
+        .setDefaultMemberPermissions(null)
         .addStringOption(option => option.setName('type')
             .setDescription('Leaderboard period')
             .addChoices(
