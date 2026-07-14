@@ -1,45 +1,55 @@
-const { ActivityType, Events, PermissionsBitField } = require('discord.js');
+const { ActivityType, Events } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const GuildSettings = require('../models/GuildSettings');
 const logger = require('../utils/logger');
-const { parseLevelRoleName, applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
-const { progression, memberRoleId } = require('../config/botConfig');
+const {
+    parseLevelRoleName,
+    applyLevelRoleFeatures,
+    hasLevelRewardPermissions,
+    removeLevelRewardFeatures
+} = require('../utils/levelRoleFeatures');
+const { progression } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
 
 const UPDATE_HISTORY_VERSION = '2026-07-14-runtime-log-rollup-v1';
 
-async function secureMemberRole(guild) {
-    const role = guild.roles.cache.get(memberRoleId);
-    if (!role) {
-        logger.error(`Configured member role ${memberRoleId} was not found in ${guild.name}.`);
-        return { memberRoleUpdated: false, memberRoleBlocked: false };
-    }
-    if (!role.editable) {
-        logger.error(`Cannot secure member role ${role.name}: move the bot's highest role above it.`);
-        return { memberRoleUpdated: false, memberRoleBlocked: true };
-    }
-    if (role.permissions.bitfield === 0n) {
-        return { memberRoleUpdated: false, memberRoleBlocked: false };
-    }
-
-    await role.edit({
-        permissions: new PermissionsBitField(),
-        reason: 'Removing elevated permissions from the standard member role'
-    });
-    return { memberRoleUpdated: true, memberRoleBlocked: false };
-}
-
 async function discoverAndConfigureLevelRoles(guild) {
     const discoveredByLevel = new Map();
     let blockedRoles = 0;
+    let permissionsUpdated = 0;
+    let nonLevelRolesUpdated = 0;
 
     for (const role of guild.roles.cache.values()) {
         const level = parseLevelRoleName(role.name);
-        if (level === null || role.managed || role.id === guild.id) continue;
+        if (role.managed) continue;
         if (!role.editable) {
+            if (level !== null || hasLevelRewardPermissions(role)) {
+                blockedRoles++;
+                logger.error(`Cannot update ${role.name}: move the bot's highest role above it.`);
+            }
+            continue;
+        }
+
+        if (level === null) {
+            try {
+                if (await removeLevelRewardFeatures(role)) nonLevelRolesUpdated++;
+            } catch (error) {
+                blockedRoles++;
+                logger.error(`Could not remove level rewards from ${role.name}:`, error);
+            }
+            continue;
+        }
+
+        try {
+            if (await applyLevelRoleFeatures(
+                role,
+                level,
+                `Enforcing exact Level ${level} permission criteria on bot startup`
+            )) permissionsUpdated++;
+        } catch (error) {
             blockedRoles++;
-            logger.error(`Cannot update ${role.name}: move the bot's highest role above it.`);
+            logger.error(`Could not configure ${role.name}; check Manage Roles and role hierarchy:`, error);
             continue;
         }
 
@@ -49,15 +59,8 @@ async function discoverAndConfigureLevelRoles(guild) {
         if (!existing || (isCanonical && !existingIsCanonical)) discoveredByLevel.set(level, role);
     }
 
-    let permissionsUpdated = 0;
     for (const [level, role] of discoveredByLevel) {
         try {
-            const changed = await applyLevelRoleFeatures(
-                role,
-                level,
-                `Enforcing exact Level ${level} permission criteria on bot startup`
-            );
-            if (changed) permissionsUpdated++;
             await Reward.findOneAndUpdate(
                 { guildId: guild.id, level },
                 { roleId: role.id },
@@ -69,11 +72,10 @@ async function discoverAndConfigureLevelRoles(guild) {
         }
     }
 
-    return { rolesMapped: discoveredByLevel.size, permissionsUpdated, blockedRoles };
+    return { rolesMapped: discoveredByLevel.size, permissionsUpdated, nonLevelRolesUpdated, blockedRoles };
 }
 
 async function synchronizeGuildRewards(guild) {
-    const memberRoleSecurity = await secureMemberRole(guild);
     const roleConfiguration = await discoverAndConfigureLevelRoles(guild);
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
     const profiles = await UserProfile.find({ guildId: guild.id }).lean();
@@ -95,7 +97,7 @@ async function synchronizeGuildRewards(guild) {
     }
     if (profileUpdates.length) await UserProfile.bulkWrite(profileUpdates);
     if (!rewards.length) {
-        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...memberRoleSecurity };
+        return { membersUpdated: 0, profilesUpdated: profileUpdates.length, ...roleConfiguration };
     }
 
     for (const reward of rewards) {
@@ -139,7 +141,7 @@ async function synchronizeGuildRewards(guild) {
             logger.error(`Could not synchronize reward roles for ${member.user.tag}:`, error);
         }
     }
-    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration, ...memberRoleSecurity };
+    return { membersUpdated, profilesUpdated: profileUpdates.length, ...roleConfiguration };
 }
 
 module.exports = {
@@ -155,8 +157,9 @@ module.exports = {
             const result = await synchronizeGuildRewards(guild);
             logger.info(
                 `Level reconciliation completed for ${guild.name}: ` +
-                `${result.permissionsUpdated}/${result.rolesMapped} role permission sets changed, ` +
-                `member role ${result.memberRoleUpdated ? 'secured' : result.memberRoleBlocked ? 'blocked by hierarchy' : 'already secure'}, ` +
+                `${result.permissionsUpdated} level role permission sets changed, ` +
+                `${result.rolesMapped} level rewards mapped, ` +
+                `${result.nonLevelRolesUpdated} non-level roles had level rewards removed, ` +
                 `${result.profilesUpdated} profiles recalculated, ${result.membersUpdated} members updated, ` +
                 `${result.blockedRoles} roles blocked by hierarchy.`
             );
