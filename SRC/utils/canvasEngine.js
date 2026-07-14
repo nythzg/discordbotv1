@@ -1,5 +1,6 @@
-const { createCanvas, loadImage, registerFont } = require('canvas');
 const path = require('path');
+process.env.FONTCONFIG_FILE ||= path.join(__dirname, '../../assets/fonts.conf');
+const { createCanvas, loadImage, registerFont } = require('canvas');
 
 registerFont(path.join(__dirname, '../../assets/Poppins-Regular.ttf'), {
     family: 'PoppinsLocalRegular'
