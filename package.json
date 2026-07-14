@@ -1,0 +1,21 @@
+{
+  "name": "discord-production-leveling-bot",
+  "version": "1.0.0",
+  "description": "Production-ready scalable Discord Leveling & Permission engine.",
+  "main": "SRC/index.js",
+  "scripts": {
+    "start": "node SRC/index.js",
+    "dev": "nodemon SRC/index.js",
+    "check": "node --check SRC/index.js && node --check SRC/handlers/commandHandler.js && node --check SRC/events/messageCreate.js"
+  },
+  "dependencies": {
+    "canvas": "^3.0.0",
+    "discord.js": "^14.17.3",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^8.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
