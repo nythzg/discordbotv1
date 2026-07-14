@@ -57,7 +57,7 @@ async function drawRankCard(username, discriminator, avatarUrl, level, currentXp
     ctx.font = '24px PoppinsLocalRegular';
     ctx.fillStyle = '#b9bbbe';
     ctx.textAlign = 'right';
-    const progressString = `${currentXp.toLocaleString()} / ${targetXp.toLocaleString()} XP`;
+    const progressString = `${currentXp.toLocaleString()} / ${targetXp.toLocaleString()} MESSAGES`;
     ctx.fillText(progressString, 870, 175);
 
     // 5. Dynamic Progress Bar Math

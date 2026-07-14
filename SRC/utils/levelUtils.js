@@ -1,14 +1,11 @@
-function getXpForLevel(level, multiplier = 100) {
+function getXpForLevel(level, multiplier = 600) {
     if (level <= 0) return 0;
-    return multiplier * Math.pow(level, 2) + 100 * level;
+    return multiplier * level;
 }
 
-function getLevelFromXp(xp, multiplier = 100) {
-    let level = 0;
-    while (xp >= getXpForLevel(level + 1, multiplier)) {
-        level++;
-    }
-    return level;
+function getLevelFromXp(xp, multiplier = 600) {
+    if (!Number.isFinite(xp) || xp <= 0 || multiplier <= 0) return 0;
+    return Math.floor(xp / multiplier);
 }
 
 module.exports = { getXpForLevel, getLevelFromXp };

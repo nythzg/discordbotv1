@@ -1,53 +1,43 @@
 const crypto = require('crypto');
 const UserProfile = require('../models/UserProfile');
-const GuildSettings = require('../models/GuildSettings');
 const Reward = require('../models/Reward');
 const logger = require('../utils/logger');
-const { defaults, antiAbuse, levelRoles } = require('../config/botConfig');
+const { progression, levelRoles, generalChannelId } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
-const { xpCooldownCache, lastMessageHashCache } = require('../utils/cacheManager');
+const { lastMessageHashCache } = require('../utils/cacheManager');
 const { sendLevelUpNotification } = require('../utils/levelUpNotifier');
 
 module.exports = {
     name: 'messageCreate',
     async execute(message) {
         if (message.author.bot || !message.guild || !message.member) return;
+        if (message.channel.id !== generalChannelId) return;
 
         const normalized = message.content.trim().toLowerCase().replace(/\s+/g, ' ');
-        if (normalized.length < antiAbuse.minWordLength) return;
+        if (!normalized) return;
 
         const cacheKey = `${message.guild.id}:${message.author.id}`;
         const hash = crypto.createHash('sha256').update(normalized).digest('hex');
         if (lastMessageHashCache.get(cacheKey) === hash) return;
 
-        const settings = await GuildSettings.findOne({ guildId: message.guild.id }).lean();
-        const cooldownSeconds = settings?.xpCooldown ?? defaults.xpCooldown;
         const now = Date.now();
-        if (now - (xpCooldownCache.get(cacheKey) || 0) < cooldownSeconds * 1000) return;
-
-        const xpMin = settings?.xpMin ?? defaults.xpMin;
-        const xpMax = settings?.xpMax ?? defaults.xpMax;
-        const low = Math.min(xpMin, xpMax);
-        const high = Math.max(xpMin, xpMax);
-        const gainedXp = Math.floor(Math.random() * (high - low + 1)) + low;
-        const multiplier = settings?.formulaMultiplier ?? defaults.formulaMultiplier;
-
         const profile = await UserProfile.findOneAndUpdate(
             { userId: message.author.id, guildId: message.guild.id },
             {
-                $inc: { xp: gainedXp, weeklyXp: gainedXp, monthlyXp: gainedXp, messagesCount: 1 },
+                $inc: { xp: 1, weeklyXp: 1, monthlyXp: 1, messagesCount: 1 },
                 $set: { lastXpTime: new Date(now), lastMessageHash: hash }
             },
             { new: true, upsert: true, setDefaultsOnInsert: true }
         );
+        lastMessageHashCache.set(cacheKey, hash);
+
         const oldLevel = profile.level;
-        const newLevel = getLevelFromXp(profile.xp, multiplier);
+        const newLevel = getLevelFromXp(profile.messagesCount, progression.messagesPerLevel);
         if (newLevel !== oldLevel) {
             profile.level = newLevel;
+            profile.xp = profile.messagesCount;
             await profile.save();
         }
-        xpCooldownCache.set(cacheKey, now);
-        lastMessageHashCache.set(cacheKey, hash);
 
         if (newLevel > oldLevel) {
             await sendLevelUpNotification(message.guild, message.channel, message.author, newLevel);

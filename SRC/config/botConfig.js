@@ -5,6 +5,10 @@ const defaults = {
     formulaMultiplier: 100
 };
 
+const progression = {
+    messagesPerLevel: 600
+};
+
 const antiAbuse = {
     minWordLength: 4,
     maxIdenticalHashesTracked: 3
@@ -18,4 +22,4 @@ const levelRoles = {
 
 const generalChannelId = process.env.GENERAL_CHANNEL_ID || '1395944374931685517';
 
-module.exports = { defaults, antiAbuse, levelRoles, generalChannelId };
+module.exports = { defaults, progression, antiAbuse, levelRoles, generalChannelId };

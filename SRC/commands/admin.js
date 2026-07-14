@@ -1,9 +1,8 @@
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
-const GuildSettings = require('../models/GuildSettings');
 const { getLevelFromXp } = require('../utils/levelUtils');
-const { defaults } = require('../config/botConfig');
+const { progression, generalChannelId } = require('../config/botConfig');
 const { sendLevelUpNotification } = require('../utils/levelUpNotifier');
 const { levelRoleFeatures, applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
 const logger = require('../utils/logger');
@@ -14,9 +13,9 @@ const adminSuiteCommand = {
         .setDescription('Manage the server leveling system.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addSubcommand(sub => sub.setName('xpadd')
-            .setDescription('Add XP directly to a user.')
+            .setDescription('Add message credits to a user (600 credits = one level).')
             .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-            .addIntegerOption(o => o.setName('amount').setDescription('XP to add').setRequired(true).setMinValue(1)))
+            .addIntegerOption(o => o.setName('amount').setDescription('Message credits to add').setRequired(true).setMinValue(1)))
         .addSubcommand(sub => sub.setName('setreward')
             .setDescription('Map an existing role to a level milestone.')
             .addIntegerOption(o => o.setName('level').setDescription('Required level').setRequired(true).setMinValue(1))
@@ -31,6 +30,10 @@ const adminSuiteCommand = {
                 .setDescription('Levels between roles (default: 5)')
                 .setMinValue(1)
                 .setMaxValue(50)))
+        .addSubcommand(sub => sub.setName('warn')
+            .setDescription('Warn a member and deduct three levels.')
+            .addUserOption(o => o.setName('user').setDescription('Member receiving the warning').setRequired(true))
+            .addStringOption(o => o.setName('reason').setDescription('Reason for the warning').setRequired(true).setMaxLength(500)))
         .addSubcommand(sub => sub.setName('resetall')
             .setDescription('Delete all leveling profiles for this server.')),
 
@@ -42,16 +45,15 @@ const adminSuiteCommand = {
         if (sub === 'xpadd') {
             const user = interaction.options.getUser('user');
             const amount = interaction.options.getInteger('amount');
-            const settings = await GuildSettings.findOne({ guildId }).lean();
-            const multiplier = settings?.formulaMultiplier ?? defaults.formulaMultiplier;
 
             const data = await UserProfile.findOneAndUpdate(
                 { userId: user.id, guildId },
-                { $inc: { xp: amount } },
+                { $inc: { xp: amount, messagesCount: amount } },
                 { new: true, upsert: true, setDefaultsOnInsert: true }
             );
             const previousLevel = data.level;
-            data.level = getLevelFromXp(data.xp, multiplier);
+            data.xp = data.messagesCount;
+            data.level = getLevelFromXp(data.messagesCount, progression.messagesPerLevel);
             await data.save();
 
             let rolesAdded = 0;
@@ -80,10 +82,10 @@ const adminSuiteCommand = {
             }
 
             await interaction.editReply(
-                `Added ${amount} XP to ${user.username}. Total: ${data.xp}; level: ${data.level}; ` +
+                `Added ${amount} message credits to ${user.username}. Total messages: ${data.messagesCount}; level: ${data.level}; ` +
                 `new reward roles: ${rolesAdded}.${roleWarning}`
             );
-            await logger.sendLog(interaction.guild, 'Admin Action: XP Added', `${interaction.user.tag} added ${amount} XP to ${user.tag}.`, '#e74c3c');
+            await logger.sendLog(interaction.guild, 'Admin Action: Message Credits Added', `${interaction.user.tag} added ${amount} message credits to ${user.tag}.`, '#e74c3c');
             return;
         }
 
@@ -199,6 +201,55 @@ const adminSuiteCommand = {
                     .join('\n') + warningText
             );
             await logger.sendLog(interaction.guild, 'Admin Action: Level Roles Configured', `${interaction.user.tag} configured ${levels.length} level roles.`, '#e74c3c');
+            return;
+        }
+
+        if (sub === 'warn') {
+            const user = interaction.options.getUser('user');
+            const reason = interaction.options.getString('reason');
+            const profile = await UserProfile.findOne({ userId: user.id, guildId });
+            if (!profile) return interaction.editReply(`${user.username} does not have a leveling profile yet.`);
+
+            const previousLevel = profile.level;
+            const deduction = progression.messagesPerLevel * 3;
+            profile.messagesCount = Math.max(0, profile.messagesCount - deduction);
+            profile.xp = profile.messagesCount;
+            profile.level = getLevelFromXp(profile.messagesCount, progression.messagesPerLevel);
+            await profile.save();
+
+            const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+            let rolesRemoved = 0;
+            if (member) {
+                const rewards = await Reward.find({ guildId }).lean();
+                const unearnedRoleIds = rewards
+                    .filter(reward => reward.level > profile.level)
+                    .map(reward => reward.roleId)
+                    .filter(roleId => {
+                        const role = interaction.guild.roles.cache.get(roleId);
+                        return role?.editable && member.roles.cache.has(roleId);
+                    });
+                if (unearnedRoleIds.length) {
+                    await member.roles.remove([...new Set(unearnedRoleIds)], `Three-level warning deduction: ${reason}`);
+                    rolesRemoved = unearnedRoleIds.length;
+                }
+            }
+
+            const warningMessage = `<@${user.id}> received a warning: **${reason}**\n` +
+                `Three levels were deducted: **Level ${previousLevel} → Level ${profile.level}**.`;
+            const announcementChannel = interaction.guild.channels.cache.get(generalChannelId) || interaction.channel;
+            if (announcementChannel?.isTextBased()) {
+                await announcementChannel.send({
+                    content: warningMessage,
+                    allowedMentions: { users: [user.id] }
+                });
+            }
+            await user.send(`You received a warning in ${interaction.guild.name}: ${reason}\nThree levels were deducted (${previousLevel} → ${profile.level}).`)
+                .catch(() => null);
+
+            await interaction.editReply(
+                `Warned ${user.username}. Level ${previousLevel} → ${profile.level}; reward roles removed: ${rolesRemoved}.`
+            );
+            await logger.sendLog(interaction.guild, 'Admin Action: Member Warned', `${interaction.user.tag} warned ${user.tag}: ${reason}. Three levels deducted.`, '#e74c3c');
             return;
         }
 

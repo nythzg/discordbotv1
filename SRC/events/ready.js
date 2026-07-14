@@ -3,10 +3,30 @@ const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
 const logger = require('../utils/logger');
 const { applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
+const { progression } = require('../config/botConfig');
+const { getLevelFromXp } = require('../utils/levelUtils');
 
 async function synchronizeGuildRewards(guild) {
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
-    if (!rewards.length) return 0;
+    const profiles = await UserProfile.find({ guildId: guild.id }).lean();
+
+    const profileUpdates = [];
+    for (const profile of profiles) {
+        const messageCount = Math.max(0, profile.messagesCount || 0);
+        const calculatedLevel = getLevelFromXp(messageCount, progression.messagesPerLevel);
+        if (profile.level !== calculatedLevel || profile.xp !== messageCount) {
+            profileUpdates.push({
+                updateOne: {
+                    filter: { _id: profile._id },
+                    update: { $set: { level: calculatedLevel, xp: messageCount } }
+                }
+            });
+            profile.level = calculatedLevel;
+            profile.xp = messageCount;
+        }
+    }
+    if (profileUpdates.length) await UserProfile.bulkWrite(profileUpdates);
+    if (!rewards.length) return profileUpdates.length;
 
     for (const reward of rewards) {
         const role = guild.roles.cache.get(reward.roleId);
@@ -16,10 +36,6 @@ async function synchronizeGuildRewards(guild) {
         }
     }
 
-    const profiles = await UserProfile.find({
-        guildId: guild.id,
-        level: { $gte: rewards[0].level }
-    }).lean();
     let membersUpdated = 0;
 
     for (const profile of profiles) {
@@ -32,10 +48,22 @@ async function synchronizeGuildRewards(guild) {
                 const role = guild.roles.cache.get(roleId);
                 return role && role.editable && !member.roles.cache.has(roleId);
             });
-        if (!missingRoleIds.length) continue;
+        const unearnedRoleIds = rewards
+            .filter(reward => reward.level > profile.level)
+            .map(reward => reward.roleId)
+            .filter(roleId => {
+                const role = guild.roles.cache.get(roleId);
+                return role && role.editable && member.roles.cache.has(roleId);
+            });
+        if (!missingRoleIds.length && !unearnedRoleIds.length) continue;
 
         try {
-            await member.roles.add([...new Set(missingRoleIds)], 'Synchronizing saved level rewards on bot startup');
+            if (missingRoleIds.length) {
+                await member.roles.add([...new Set(missingRoleIds)], 'Synchronizing saved level rewards on bot startup');
+            }
+            if (unearnedRoleIds.length) {
+                await member.roles.remove([...new Set(unearnedRoleIds)], 'Removing rewards above the saved member level');
+            }
             membersUpdated++;
         } catch (error) {
             logger.error(`Could not synchronize reward roles for ${member.user.tag}:`, error);

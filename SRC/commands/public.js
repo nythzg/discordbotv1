@@ -1,95 +1,83 @@
 const { SlashCommandBuilder, AttachmentBuilder, EmbedBuilder } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
-const GuildSettings = require('../models/GuildSettings');
 const { getXpForLevel } = require('../utils/levelUtils');
 const { drawRankCard } = require('../utils/canvasEngine');
-const botConfig = require('../config/botConfig');
+const { progression } = require('../config/botConfig');
 
 const rankCommand = {
     data: new SlashCommandBuilder()
         .setName('rank')
-        .setDescription('Render user experience metric profiles dashboard card.')
-        .addUserOption(o => o.setName('target').setDescription('Target user member profile query')),
+        .setDescription('Show a member level and qualifying-message progress.')
+        .addUserOption(option => option.setName('target').setDescription('Member to view')),
     async execute(interaction) {
         await interaction.deferReply();
         const user = interaction.options.getUser('target') || interaction.user;
-        if (user.bot) return interaction.editReply('Bots do not scale experience metrics.');
+        if (user.bot) return interaction.editReply('Bots do not receive levels.');
 
         const guildId = interaction.guild.id;
-        let settings = await GuildSettings.findOne({ guildId }).lean();
-        const mult = settings ? settings.formulaMultiplier : botConfig.defaults.formulaMultiplier;
+        const profiles = await UserProfile.find({ guildId }).sort({ messagesCount: -1 }).lean();
+        const foundIndex = profiles.findIndex(profile => profile.userId === user.id);
+        const rankingPosition = foundIndex >= 0 ? foundIndex + 1 : profiles.length + 1;
+        const profile = foundIndex >= 0 ? profiles[foundIndex] : { messagesCount: 0, level: 0 };
 
-        const allSortedProfiles = await UserProfile.find({ guildId }).sort({ xp: -1 }).lean();
-        const rankingPos = allSortedProfiles.findIndex(p => p.userId === user.id) + 1 || allSortedProfiles.length + 1;
-        
-        const currentProfile = allSortedProfiles.find(p => p.userId === user.id) || { xp: 0, level: 0 };
-
-        const currentLvlBaseXp = getXpForLevel(currentProfile.level, mult);
-        const nextLvlTargetXp = getXpForLevel(currentProfile.level + 1, mult);
-
-        const relativeCurrentXp = currentProfile.xp - currentLvlBaseXp;
-        const relativeTargetXp = nextLvlTargetXp - currentLvlBaseXp;
+        const currentLevelStart = getXpForLevel(profile.level, progression.messagesPerLevel);
+        const nextLevelTarget = getXpForLevel(profile.level + 1, progression.messagesPerLevel);
+        const currentProgress = profile.messagesCount - currentLevelStart;
+        const requiredProgress = nextLevelTarget - currentLevelStart;
 
         const canvasBuffer = await drawRankCard(
             user.username,
             user.discriminator,
             user.displayAvatarURL({ extension: 'png', size: 256 }),
-            currentProfile.level,
-            relativeCurrentXp,
-            relativeTargetXp,
-            rankingPos
+            profile.level,
+            currentProgress,
+            requiredProgress,
+            rankingPosition
         );
-
-        const imageAttachment = new AttachmentBuilder(canvasBuffer, { name: 'rank.png' });
-        await interaction.editReply({ files: [imageAttachment] });
+        await interaction.editReply({ files: [new AttachmentBuilder(canvasBuffer, { name: 'rank.png' })] });
     }
 };
 
 const leaderboardCommand = {
     data: new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('View the community experience leaderboard.')
-        .addStringOption(o => o.setName('type')
-            .setDescription('Leaderboard filter context type')
+        .setDescription('View the qualifying-message leaderboard.')
+        .addStringOption(option => option.setName('type')
+            .setDescription('Leaderboard period')
             .addChoices(
-                { name: 'Global All-Time', value: 'alltime' },
-                { name: 'Weekly Metric Run', value: 'weekly' },
-                { name: 'Monthly Metric Run', value: 'monthly' }
+                { name: 'All-Time', value: 'alltime' },
+                { name: 'Weekly', value: 'weekly' },
+                { name: 'Monthly', value: 'monthly' }
             )),
     async execute(interaction) {
         await interaction.deferReply();
         const filterType = interaction.options.getString('type') || 'alltime';
         const guildId = interaction.guild.id;
 
-        let sortingField = 'xp';
-        let displayLabelText = 'All-Time';
-        if (filterType === 'weekly') { sortingField = 'weeklyXp'; displayLabelText = 'Weekly'; }
-        if (filterType === 'monthly') { sortingField = 'monthlyXp'; displayLabelText = 'Monthly'; }
+        let sortingField = 'messagesCount';
+        let periodLabel = 'All-Time';
+        if (filterType === 'weekly') { sortingField = 'weeklyXp'; periodLabel = 'Weekly'; }
+        if (filterType === 'monthly') { sortingField = 'monthlyXp'; periodLabel = 'Monthly'; }
 
-        const dataset = await UserProfile.find({ guildId })
+        const profiles = await UserProfile.find({ guildId })
             .sort({ [sortingField]: -1 })
             .limit(10)
             .lean();
+        if (!profiles.length) return interaction.editReply('No qualifying messages have been recorded yet.');
 
-        if (dataset.length === 0) {
-            return interaction.editReply('No active user accounts logged in current runtime matrices.');
+        const lines = [];
+        for (let index = 0; index < profiles.length; index++) {
+            const profile = profiles[index];
+            const user = await interaction.client.users.fetch(profile.userId).catch(() => null);
+            const name = user ? `**${user.username}**` : `Former Member (\`${profile.userId}\`)`;
+            lines.push(`\`#${index + 1}\` ${name} • Level ${profile.level} (${profile[sortingField].toLocaleString()} messages)`);
         }
 
         const embed = new EmbedBuilder()
-            .setTitle(`🏆 ${interaction.guild.name} - ${displayLabelText} Leaderboard`)
+            .setTitle(`🏆 ${interaction.guild.name} — ${periodLabel} Leaderboard`)
             .setColor('#7289da')
+            .setDescription(lines.join('\n'))
             .setTimestamp();
-
-        let contextLinesString = '';
-        for (let index = 0; index < dataset.length; index++) {
-            const entry = dataset[index];
-            const fetchedUser = await interaction.client.users.fetch(entry.userId).catch(() => null);
-            const maskName = fetchedUser ? `**${fetchedUser.username}**` : `Left Member (\`${entry.userId}\`)`;
-            const displayMetricVal = filterType === 'alltime' ? entry.xp : entry[sortingField];
-            contextLinesString += `\`#${index + 1}\` ${maskName} • Level ${entry.level} (${displayMetricVal.toLocaleString()} XP)\n`;
-        }
-
-        embed.setDescription(contextLinesString);
         await interaction.editReply({ embeds: [embed] });
     }
 };
