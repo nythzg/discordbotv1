@@ -1,10 +1,13 @@
 const { ActivityType, Events } = require('discord.js');
 const UserProfile = require('../models/UserProfile');
 const Reward = require('../models/Reward');
+const GuildSettings = require('../models/GuildSettings');
 const logger = require('../utils/logger');
 const { applyLevelRoleFeatures } = require('../utils/levelRoleFeatures');
 const { progression } = require('../config/botConfig');
 const { getLevelFromXp } = require('../utils/levelUtils');
+
+const UPDATE_HISTORY_VERSION = '2026-07-14-runtime-log-rollup-v1';
 
 async function synchronizeGuildRewards(guild) {
     const rewards = await Reward.find({ guildId: guild.id }).sort({ level: 1 }).lean();
@@ -84,6 +87,21 @@ module.exports = {
         for (const guild of client.guilds.cache.values()) {
             const membersUpdated = await synchronizeGuildRewards(guild);
             logger.info(`Reward role synchronization completed for ${guild.name}: ${membersUpdated} member(s) updated.`);
+
+            const settings = await GuildSettings.findOne({ guildId: guild.id }).lean();
+            if (settings?.lastUpdateHistoryVersion !== UPDATE_HISTORY_VERSION) {
+                const sent = await logger.sendUpdateHistory(guild);
+                if (sent) {
+                    await GuildSettings.findOneAndUpdate(
+                        { guildId: guild.id },
+                        { $set: { lastUpdateHistoryVersion: UPDATE_HISTORY_VERSION } },
+                        { upsert: true, setDefaultsOnInsert: true }
+                    );
+                    logger.info(`Posted the complete bot update history to channel ${logger.LOG_CHANNEL_ID}.`);
+                } else {
+                    logger.error(`Could not post update history: channel ${logger.LOG_CHANNEL_ID} is unavailable in ${guild.name}.`);
+                }
+            }
         }
     }
 };
